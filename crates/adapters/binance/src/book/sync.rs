@@ -36,12 +36,12 @@ use nautilus_common::{
     live::{dst::time::Instant, sender::EventSender},
     messages::DataEvent,
 };
-use nautilus_core::UnixNanos;
+use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_live::book::{
     BookSequenceOutcome, recovery::BookRecovery, snapshot::SnapshotGate, sync::BookSync,
 };
 use nautilus_model::{
-    data::{Data, OrderBookDeltas},
+    data::{Data, OrderBookDelta, OrderBookDeltas},
     identifiers::InstrumentId,
 };
 use parking_lot::Mutex;
@@ -168,6 +168,7 @@ impl BookSyncTracker {
                     "Book sequence gap for {instrument_id}: \
                      last_update_id={last_update_id}, {update}; requesting a fresh snapshot"
                 );
+                self.send_gap_clear(instrument_id);
                 book.buffer.clear();
                 buffer_update(&mut book.buffer, update);
                 book.sync.claim()
@@ -261,10 +262,22 @@ impl BookSyncTracker {
     pub(crate) fn reset_on_reconnect(&self) {
         let mut books = self.books.lock();
 
-        for book in books.values_mut() {
+        for (instrument_id, book) in books.iter_mut() {
+            if book.sync.position().is_some() {
+                self.send_gap_clear(*instrument_id);
+            }
             book.sync.reset_on_reconnect();
             book.buffer.clear();
         }
+    }
+
+    fn send_gap_clear(&self, instrument_id: InstrumentId) {
+        let ts_now = get_atomic_clock_realtime().get_time_ns();
+        let deltas = OrderBookDeltas::new(
+            instrument_id,
+            vec![OrderBookDelta::clear(instrument_id, 0, ts_now, ts_now)],
+        );
+        self.send(deltas);
     }
 
     fn send(&self, deltas: OrderBookDeltas) {
@@ -511,6 +524,10 @@ mod tests {
         deltas.iter().map(|deltas| deltas.sequence).collect()
     }
 
+    fn is_clear_only(deltas: &OrderBookDeltas) -> bool {
+        deltas.deltas.len() == 1 && deltas.deltas[0].action == BookAction::Clear
+    }
+
     #[rstest]
     #[case::stale_final_equals_last(95, 100, BookSequenceOutcome::Suppress, 100)]
     #[case::stale_final_below_last(90, 99, BookSequenceOutcome::Suppress, 100)]
@@ -707,7 +724,7 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&first, &second));
         assert!(buffered.is_none());
-        assert_eq!(before_resync, vec![100, 101]);
+        assert_eq!(before_resync, vec![100, 101, 0]);
         assert_eq!(sequences(&received(&mut rx)), vec![103, 104]);
     }
 
@@ -749,7 +766,8 @@ mod tests {
         let received = received(&mut rx);
         assert!(linked.is_none());
         assert!(gap.is_some());
-        assert_eq!(sequences(&received), vec![100, 105, 110]);
+        assert_eq!(sequences(&received), vec![100, 105, 110, 0]);
+        assert!(is_clear_only(&received[3]));
         assert_eq!(received[0].ts_event, UnixNanos::from(7_u64));
     }
 
@@ -857,7 +875,42 @@ mod tests {
 
         assert_eq!(before_reconnect, usize::from(!cancelled));
         assert!(resumed.is_some_and(|second| !Arc::ptr_eq(&first, &second)));
-        assert!(received(&mut rx).is_empty());
+        let after = received(&mut rx);
+        if cancelled {
+            assert!(after.is_empty());
+        } else {
+            assert_eq!(sequences(&after), vec![0]);
+            assert!(is_clear_only(&after[0]));
+        }
+    }
+
+    #[rstest]
+    fn gap_and_second_gap_emit_single_immediate_clear_until_snapshot() {
+        let (tracker, mut rx) = tracker(DepthSequencing::Futures);
+        tracker.subscribe(instrument_id());
+        let first = tracker
+            .handle_update(instrument_id(), futures_update(99, 101, 98))
+            .unwrap();
+        accept(&tracker, &first, snapshot(100, true)).unwrap();
+        let _ = received(&mut rx);
+
+        // Gap emits immediate CLEAR (sequence 0), second buffered diff does not re-emit
+        let gap1 = tracker
+            .handle_update(instrument_id(), futures_update(102, 103, 77))
+            .unwrap();
+        let gap2 = tracker.handle_update(instrument_id(), futures_update(104, 105, 103));
+        assert!(gap2.is_none());
+
+        let clears = received(&mut rx);
+        assert_eq!(sequences(&clears), vec![0]);
+        assert!(is_clear_only(&clears[0]));
+
+        // Recovery snapshot restores book with clear + levels
+        let recovered = accept(&tracker, &gap1, snapshot(103, true));
+        assert_eq!(recovered, Ok(()));
+        let resync = received(&mut rx);
+        assert_eq!(sequences(&resync), vec![103, 105]);
+        assert!(!is_clear_only(&resync[0]));
     }
 
     #[rstest]

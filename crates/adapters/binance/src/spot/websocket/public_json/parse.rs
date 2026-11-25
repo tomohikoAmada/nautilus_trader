@@ -34,7 +34,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use super::messages::{
-    BinanceSpotBookTickerMsg, BinanceSpotDepthDiffMsg, BinanceSpotKlineMsg,
+    BinanceSpotAggTradeMsg, BinanceSpotBookTickerMsg, BinanceSpotDepthDiffMsg, BinanceSpotKlineMsg,
     BinanceSpotPartialDepthMsg, BinanceSpotTickerMsg, BinanceSpotTradeMsg,
 };
 use crate::{
@@ -97,6 +97,42 @@ pub fn parse_trade(
         size,
         aggressor_side,
         TradeId::new(msg.trade_id.to_string()),
+        ts_event,
+        ts_init,
+    ))
+}
+
+/// Parses an aggregate trade message into a `TradeTick`.
+///
+/// # Errors
+///
+/// Returns an error if price or quantity fields cannot be parsed.
+pub fn parse_agg_trade(
+    msg: &BinanceSpotAggTradeMsg,
+    instrument: &InstrumentAny,
+    ts_init: UnixNanos,
+) -> anyhow::Result<TradeTick> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    let price = parse_positive_price(&msg.price, price_precision, "aggTrade price")?;
+    let size = parse_positive_quantity(&msg.quantity, size_precision, "aggTrade quantity")?;
+
+    let aggressor_side = if msg.is_buyer_maker {
+        AggressorSide::Sell
+    } else {
+        AggressorSide::Buy
+    };
+
+    let ts_event = parse_millis_or_init(msg.trade_time, "Spot JSON aggTrade time", ts_init);
+
+    Ok(TradeTick::new(
+        instrument_id,
+        price,
+        size,
+        aggressor_side,
+        TradeId::new(msg.agg_trade_id.to_string()),
         ts_event,
         ts_init,
     ))

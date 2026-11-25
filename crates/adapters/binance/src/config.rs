@@ -268,6 +268,11 @@ pub struct BinanceDataClientConfig {
     /// Whether to route this Spot client to Binance US.
     #[builder(default)]
     pub us: bool,
+    /// Subscribe Spot JSON public trades via `@aggTrade` instead of `@trade` (opt-in).
+    #[builder(default)]
+    pub use_spot_agg_trade: bool,
+    /// Optional Futures full-depth diff interval in ms (`None` keeps `@depth@0ms`, `100` uses `@depth@100ms`).
+    pub futures_diff_depth_interval_ms: Option<u64>,
     /// WebSocket transport backend (defaults to `Tungstenite`).
     #[builder(default)]
     pub transport_backend: TransportBackend,
@@ -289,6 +294,8 @@ nautilus_core::impl_pyo3_config_getters!(BinanceDataClientConfig {
     retry_delay_initial_ms: u64,
     retry_delay_max_ms: u64,
     us: bool,
+    use_spot_agg_trade: bool,
+    futures_diff_depth_interval_ms: Option<u64>,
     transport_backend: TransportBackend,
 });
 
@@ -321,6 +328,13 @@ impl BinanceDataClientConfig {
             anyhow::ensure!(
                 self.spot_market_data_mode == BinanceSpotMarketDataMode::Json,
                 "Binance US market data requires spot_market_data_mode=Json"
+            );
+        }
+
+        if let Some(interval_ms) = self.futures_diff_depth_interval_ms {
+            anyhow::ensure!(
+                matches!(interval_ms, 0 | 100 | 250 | 500),
+                "Unsupported Binance Futures diff depth interval {interval_ms}ms (expected 0, 100, 250, or 500)"
             );
         }
 

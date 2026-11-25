@@ -103,6 +103,7 @@ use crate::{
                 BinanceSpotPublicJsonWebSocketClient,
                 messages::BinanceSpotPublicWsMessage,
                 parse::{
+                    parse_agg_trade as parse_json_agg_trade,
                     parse_book_ticker as parse_json_book_ticker,
                     parse_depth_diff as parse_json_depth_diff,
                     parse_depth_snapshot as parse_json_depth_snapshot,
@@ -182,6 +183,8 @@ impl BinanceSpotDataClient {
             .as_ref()
             .map(|value| value.expose_secret().to_owned());
 
+        let json_responses =
+            config.us || spot_market_data_mode == BinanceSpotMarketDataMode::Json;
         let http_client = BinanceSpotHttpClient::new_with_json_responses(
             config.environment,
             clock,
@@ -191,7 +194,7 @@ impl BinanceSpotDataClient {
             Some(config.recv_window_ms),
             None, // timeout_secs
             proxy_url.clone(),
-            config.us,
+            json_responses,
         )?
         .with_retry_config(config.retry_config());
 
@@ -555,6 +558,16 @@ impl BinanceSpotDataClient {
                     match parse_json_trade(event, instrument, ts_init) {
                         Ok(trade) => Self::send_data(data_sender, Data::Trade(trade)),
                         Err(e) => log::warn!("Failed to parse Spot JSON trade: {e}"),
+                    }
+                }
+            }
+            BinanceSpotPublicWsMessage::AggTrade(ref event) => {
+                let symbol = event.symbol;
+                let cache = ws_instruments.load();
+                if let Some(instrument) = cache.get(&symbol) {
+                    match parse_json_agg_trade(event, instrument, ts_init) {
+                        Ok(trade) => Self::send_data(data_sender, Data::Trade(trade)),
+                        Err(e) => log::warn!("Failed to parse Spot JSON aggTrade: {e}"),
                     }
                 }
             }
@@ -1352,7 +1365,14 @@ impl DataClient for BinanceSpotDataClient {
         execute_instrument_subscriptions(&cmd.instrument_ids, |instrument_id| {
             let ws = self.ws_client.clone();
 
-            let stream = format!("{}@trade", instrument_id.symbol.as_str().to_lowercase());
+            let suffix = if self.config.use_spot_agg_trade
+                && self.spot_market_data_mode == BinanceSpotMarketDataMode::Json
+            {
+                "@aggTrade"
+            } else {
+                "@trade"
+            };
+            let stream = format!("{}{}", instrument_id.symbol.as_str().to_lowercase(), suffix);
 
             self.spawn_ws(
                 async move {
@@ -1489,7 +1509,14 @@ impl DataClient for BinanceSpotDataClient {
         execute_instrument_subscriptions(&cmd.instrument_ids, |instrument_id| {
             let ws = self.ws_client.clone();
 
-            let stream = format!("{}@trade", instrument_id.symbol.as_str().to_lowercase());
+            let suffix = if self.config.use_spot_agg_trade
+                && self.spot_market_data_mode == BinanceSpotMarketDataMode::Json
+            {
+                "@aggTrade"
+            } else {
+                "@trade"
+            };
+            let stream = format!("{}{}", instrument_id.symbol.as_str().to_lowercase(), suffix);
 
             self.spawn_ws(
                 async move {

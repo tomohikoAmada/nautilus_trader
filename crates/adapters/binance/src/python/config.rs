@@ -141,6 +141,8 @@ impl BinanceDataClientConfig {
         retry_delay_initial_ms = None,
         retry_delay_max_ms = None,
         book_snapshot_timeout_secs = None,
+        use_spot_agg_trade = false,
+        futures_diff_depth_interval_ms = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn py_new(
@@ -162,6 +164,8 @@ impl BinanceDataClientConfig {
         retry_delay_initial_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         book_snapshot_timeout_secs: Option<u64>,
+        use_spot_agg_trade: bool,
+        futures_diff_depth_interval_ms: Option<u64>,
     ) -> PyResult<Self> {
         let defaults = Self::default();
         let config = Self {
@@ -186,6 +190,9 @@ impl BinanceDataClientConfig {
                 .unwrap_or(defaults.retry_delay_initial_ms),
             retry_delay_max_ms: retry_delay_max_ms.unwrap_or(defaults.retry_delay_max_ms),
             us,
+            use_spot_agg_trade,
+            futures_diff_depth_interval_ms: futures_diff_depth_interval_ms
+                .or(defaults.futures_diff_depth_interval_ms),
             transport_backend: transport_backend.unwrap_or(defaults.transport_backend),
         };
         config.validate().map_err(to_pyvalue_err)?;

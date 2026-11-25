@@ -31,6 +31,8 @@ use crate::{
 pub enum BinanceSpotPublicWsMessage {
     /// Trade stream event.
     Trade(BinanceSpotTradeMsg),
+    /// Aggregate trade stream event.
+    AggTrade(BinanceSpotAggTradeMsg),
     /// Best bid/ask stream event.
     BookTicker(BinanceSpotBookTickerMsg),
     /// Partial depth snapshot stream event.
@@ -131,6 +133,41 @@ pub struct BinanceSpotTradeMsg {
     /// Quantity.
     #[serde(rename = "q")]
     pub quantity: String,
+    /// Trade time in milliseconds.
+    #[serde(rename = "T")]
+    pub trade_time: i64,
+    /// Is buyer the market maker.
+    #[serde(rename = "m")]
+    pub is_buyer_maker: bool,
+}
+
+/// Aggregate trade stream message.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BinanceSpotAggTradeMsg {
+    /// Event type.
+    #[serde(rename = "e")]
+    pub event_type: String,
+    /// Event time in milliseconds.
+    #[serde(rename = "E")]
+    pub event_time: i64,
+    /// Symbol.
+    #[serde(rename = "s")]
+    pub symbol: Ustr,
+    /// Aggregate trade ID.
+    #[serde(rename = "a")]
+    pub agg_trade_id: u64,
+    /// Price.
+    #[serde(rename = "p")]
+    pub price: String,
+    /// Quantity.
+    #[serde(rename = "q")]
+    pub quantity: String,
+    /// First trade ID.
+    #[serde(rename = "f")]
+    pub first_trade_id: u64,
+    /// Last trade ID.
+    #[serde(rename = "l")]
+    pub last_trade_id: u64,
     /// Trade time in milliseconds.
     #[serde(rename = "T")]
     pub trade_time: i64,

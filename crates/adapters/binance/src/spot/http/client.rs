@@ -2947,7 +2947,7 @@ impl BinanceSpotHttpClient {
     ) -> BinanceSpotHttpResult<AHashMap<InstrumentId, MarketStatusAction>> {
         let mut statuses = AHashMap::new();
 
-        if us {
+        if us || self.inner.json_responses {
             let info = self.inner.exchange_info_json().await?;
             for symbol in info.symbols {
                 let instrument_id =
@@ -2998,7 +2998,7 @@ impl BinanceSpotHttpClient {
             .map_err(|e| BinanceSpotHttpError::ValidationError(e.to_string()))?;
         let ts_init = self.generate_ts_init();
 
-        let mut instruments = if us {
+        let mut instruments = if us || self.inner.json_responses {
             if config.query_commission_rates {
                 if config.log_warnings {
                     log::warn!("query_commission_rates does not copy commission onto instruments");
@@ -4832,5 +4832,87 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.to_string(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_spot_http_client_json_responses_loads_global_instruments() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let body = serde_json::json!({
+            "timezone": "UTC",
+            "serverTime": 1_700_000_000_000_i64,
+            "rateLimits": [],
+            "exchangeFilters": [],
+            "symbols": [{
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "baseAsset": "BTC",
+                "baseAssetPrecision": 8,
+                "quoteAsset": "USDT",
+                "quotePrecision": 8,
+                "quoteAssetPrecision": 8,
+                "baseCommissionPrecision": 8,
+                "quoteCommissionPrecision": 8,
+                "orderTypes": ["LIMIT", "MARKET"],
+                "icebergAllowed": true,
+                "ocoAllowed": true,
+                "otoAllowed": false,
+                "quoteOrderQtyMarketAllowed": true,
+                "allowTrailingStop": true,
+                "cancelReplaceAllowed": true,
+                "amendAllowed": false,
+                "isSpotTradingAllowed": true,
+                "isMarginTradingAllowed": false,
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000.00", "tickSize": "0.01"},
+                    {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000.0", "stepSize": "0.00001"}
+                ],
+                "permissions": ["SPOT"],
+                "permissionSets": [],
+                "defaultSelfTradePreventionMode": "EXPIRE_MAKER",
+                "allowedSelfTradePreventionModes": ["EXPIRE_MAKER"]
+            }]
+        })
+        .to_string();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = sock.read(&mut buf).await.unwrap();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let client = BinanceSpotHttpClient::new_with_json_responses(
+            BinanceEnvironment::Live,
+            nautilus_core::time::get_atomic_clock_realtime(),
+            None,
+            None,
+            Some(format!("http://{addr}")),
+            None,
+            Some(5),
+            None,
+            true,
+        )
+        .unwrap();
+
+        let instruments = client
+            .request_instruments_with_config(
+                &BinanceInstrumentProviderConfig::default(),
+                false, // Global Spot (us=false) with json_responses=true
+            )
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(instruments.len(), 1);
+        assert_eq!(instruments[0].id().to_string(), "BTCUSDT.BINANCE");
     }
 }

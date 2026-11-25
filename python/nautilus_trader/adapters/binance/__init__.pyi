@@ -110,6 +110,10 @@ class BinanceDataClientConfig:
     @property
     def us(self) -> bool: ...
     @property
+    def use_spot_agg_trade(self) -> bool: ...
+    @property
+    def futures_diff_depth_interval_ms(self) -> int | None: ...
+    @property
     def transport_backend(self) -> network.TransportBackend: ...
     def __init__(
         self,
@@ -126,6 +130,8 @@ class BinanceDataClientConfig:
         proxy_url: str | None = None,
         recv_window_ms: int | None = None,
         us: bool = False,
+        use_spot_agg_trade: bool = False,
+        futures_diff_depth_interval_ms: int | None = None,
         transport_backend: network.TransportBackend | None = None,
         max_retries: int | None = None,
         retry_delay_initial_ms: int | None = None,

@@ -2847,7 +2847,11 @@ impl BinanceFuturesDataClient {
 
             // Establish gate protection before publishing the new semantics, so a
             // concurrent consumer cannot parse an old-stream frame with them
-            let stream = book_stream(&instrument_id, depth);
+            let stream = book_stream(
+                &instrument_id,
+                depth,
+                self.config.futures_diff_depth_interval_ms,
+            );
             revive_book_drains(&self.book_unsubscribes_pending, instrument_id, &stream);
 
             self.book_subscriptions.insert(instrument_id, depth);
@@ -2920,7 +2924,11 @@ impl BinanceFuturesDataClient {
 
             // Stop book sync so an in-flight snapshot cannot emit after unsubscribe
             self.book_sync.remove(instrument_id);
-            let stream = book_stream(&instrument_id, depth);
+            let stream = book_stream(
+                &instrument_id,
+                depth,
+                self.config.futures_diff_depth_interval_ms,
+            );
             let generation = self.book_drain_generation;
             self.book_drain_generation += 1;
 
@@ -3031,10 +3039,20 @@ fn is_partial_book_depth(depth: u32) -> bool {
     matches!(depth, 5 | 10 | 20)
 }
 
-fn book_stream(instrument_id: &InstrumentId, depth: u32) -> String {
+fn book_stream(
+    instrument_id: &InstrumentId,
+    depth: u32,
+    futures_diff_depth_interval_ms: Option<u64>,
+) -> String {
     let symbol = format_binance_stream_symbol(instrument_id);
     if is_partial_book_depth(depth) {
         format!("{symbol}@depth{depth}@100ms")
+    } else if let Some(interval_ms) = futures_diff_depth_interval_ms {
+        match interval_ms {
+            100 | 500 | 0 => format!("{symbol}@depth@{interval_ms}ms"),
+            250 => format!("{symbol}@depth"),
+            _ => format!("{symbol}@depth@0ms"),
+        }
     } else {
         format!("{symbol}@depth@0ms")
     }
@@ -3458,5 +3476,21 @@ mod tests {
         };
 
         assert_eq!(classified, expected);
+    }
+
+    #[rstest]
+    #[case::default_zero(0, None, "btcusdt@depth@0ms")]
+    #[case::explicit_100(0, Some(100), "btcusdt@depth@100ms")]
+    #[case::explicit_250(0, Some(250), "btcusdt@depth")]
+    #[case::explicit_500(0, Some(500), "btcusdt@depth@500ms")]
+    #[case::explicit_zero(0, Some(0), "btcusdt@depth@0ms")]
+    #[case::partial_ignores_diff_interval(20, Some(100), "btcusdt@depth20@100ms")]
+    fn test_book_stream_respects_futures_diff_depth_interval(
+        #[case] depth: u32,
+        #[case] interval_ms: Option<u64>,
+        #[case] expected: &str,
+    ) {
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        assert_eq!(book_stream(&instrument_id, depth, interval_ms), expected);
     }
 }

@@ -31,11 +31,11 @@ use nautilus_network::{
 use ustr::Ustr;
 
 use super::messages::{
-    BinanceCombinedStreamEvent, BinanceSpotBookTickerMsg, BinanceSpotDepthDiffMsg,
-    BinanceSpotKlineMsg, BinanceSpotPartialDepthMsg, BinanceSpotPartialDepthPayload,
-    BinanceSpotPublicWsCommand, BinanceSpotPublicWsMessage, BinanceSpotServerShutdownMsg,
-    BinanceSpotTickerMsg, BinanceSpotTradeMsg, BinanceSpotWsErrorResponse, BinanceSpotWsResponse,
-    BinanceWsSubscription,
+    BinanceCombinedStreamEvent, BinanceSpotAggTradeMsg, BinanceSpotBookTickerMsg,
+    BinanceSpotDepthDiffMsg, BinanceSpotKlineMsg, BinanceSpotPartialDepthMsg,
+    BinanceSpotPartialDepthPayload, BinanceSpotPublicWsCommand, BinanceSpotPublicWsMessage,
+    BinanceSpotServerShutdownMsg, BinanceSpotTickerMsg, BinanceSpotTradeMsg,
+    BinanceSpotWsErrorResponse, BinanceSpotWsResponse, BinanceWsSubscription,
 };
 use crate::common::{
     consts::BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION,
@@ -319,6 +319,14 @@ impl BinanceSpotPublicWsHandler {
                 .ok()
                 .into_iter()
                 .collect(),
+            BinanceWsEventType::AggTrade => {
+                serde_json::from_value::<BinanceSpotAggTradeMsg>(payload)
+                    .map(BinanceSpotPublicWsMessage::AggTrade)
+                    .map_err(|e| log::warn!("Failed to parse Spot aggTrade: {e}"))
+                    .ok()
+                    .into_iter()
+                    .collect()
+            }
             BinanceWsEventType::BookTicker => {
                 serde_json::from_value::<BinanceSpotBookTickerMsg>(payload)
                     .map(BinanceSpotPublicWsMessage::BookTicker)
@@ -663,5 +671,52 @@ mod tests {
             out[0],
             BinanceSpotPublicWsMessage::ServerShutdown(_)
         ));
+    }
+
+    #[rstest]
+    fn test_handle_stream_data_parses_spot_agg_trade() {
+        let signal = Arc::new(AtomicBool::new(false));
+        let request_id_counter = Arc::new(AtomicU64::new(1));
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscriptions = SubscriptionState::new('@');
+
+        let handler = BinanceSpotPublicWsHandler::new(
+            signal,
+            cmd_rx,
+            raw_rx,
+            subscriptions,
+            request_id_counter,
+        );
+
+        let payload = json!({
+            "stream": "btcusdt@aggTrade",
+            "data": {
+                "e": "aggTrade",
+                "E": 1_700_000_000_010_i64,
+                "s": "BTCUSDT",
+                "a": 555_123_u64,
+                "p": "91000.10",
+                "q": "0.2500",
+                "f": 1001_u64,
+                "l": 1002_u64,
+                "T": 1_700_000_000_008_i64,
+                "m": true,
+                "M": true
+            }
+        });
+
+        let out = handler.handle_stream_data(&payload);
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            BinanceSpotPublicWsMessage::AggTrade(msg) => {
+                assert_eq!(msg.symbol.as_str(), "BTCUSDT");
+                assert_eq!(msg.agg_trade_id, 555_123);
+                assert_eq!(msg.first_trade_id, 1001);
+                assert_eq!(msg.last_trade_id, 1002);
+                assert!(msg.is_buyer_maker);
+            }
+            other => panic!("expected AggTrade, was {other:?}"),
+        }
     }
 }
