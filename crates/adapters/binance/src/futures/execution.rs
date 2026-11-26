@@ -1513,6 +1513,28 @@ impl BinanceFuturesExecutionClient {
                     Err(BinanceFuturesHttpError::BinanceError { code: -4046, .. }) => {
                         log::debug!("{symbol} margin type already {margin_type:?}");
                     }
+                    Err(BinanceFuturesHttpError::BinanceError {
+                        code: -4067 | -4048,
+                        ref message,
+                        ..
+                    }) => {
+                        let mut builder = BinancePositionRiskParamsBuilder::default();
+                        builder.symbol(symbol.clone());
+                        let risk_params = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let positions = self
+                            .http_client
+                            .query_positions(&risk_params)
+                            .await
+                            .with_context(|| format!("failed to verify margin type for {symbol}"))?;
+                        if !verify_symbol_margin_type_matches(&positions, symbol, *margin_type) {
+                            anyhow::bail!(
+                                "Margin type for {symbol} does not match configured {margin_type:?} and cannot be changed with open orders/positions: {message}"
+                            );
+                        }
+                        log::info!(
+                            "{symbol} margin type verified already {margin_type:?} (with open position/orders)"
+                        );
+                    }
                     Err(e) => {
                         return Err(e).context(format!("failed to set margin type for {symbol}"));
                     }
@@ -1522,6 +1544,23 @@ impl BinanceFuturesExecutionClient {
 
         Ok(())
     }
+}
+
+fn verify_symbol_margin_type_matches(
+    positions: &[BinancePositionRisk],
+    symbol: &str,
+    expected: crate::common::enums::BinanceMarginType,
+) -> bool {
+    let mut saw_symbol = false;
+    for pos in positions {
+        if pos.symbol.as_str() == symbol {
+            saw_symbol = true;
+            if pos.margin_type != Some(expected) {
+                return false;
+            }
+        }
+    }
+    saw_symbol
 }
 
 fn quantity_free_close_position_side(order: &BinanceFuturesAlgoOrder) -> Option<PositionSide> {
@@ -4847,6 +4886,30 @@ mod tests {
         order.quantity = quantity.map(str::to_string);
 
         assert_eq!(quantity_free_close_position_side(&order), expected);
+    }
+
+    #[rstest]
+    fn test_verify_symbol_margin_type_matches_isolated_and_fails_closed() {
+        use crate::common::enums::BinanceMarginType;
+        let json = load_fixture_string("futures/http_json/position_risk.json");
+        let mut positions: Vec<BinancePositionRisk> = serde_json::from_str(&json).unwrap();
+        positions[0].symbol = ustr::Ustr::from("SOLUSDT");
+        positions[0].margin_type = Some(BinanceMarginType::Isolated);
+        assert!(verify_symbol_margin_type_matches(
+            &positions,
+            "SOLUSDT",
+            BinanceMarginType::Isolated
+        ));
+        assert!(!verify_symbol_margin_type_matches(
+            &positions,
+            "SOLUSDT",
+            BinanceMarginType::Cross
+        ));
+        assert!(!verify_symbol_margin_type_matches(
+            &positions,
+            "BTCUSDT",
+            BinanceMarginType::Isolated
+        ));
     }
 
     #[rstest]
